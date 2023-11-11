@@ -1,0 +1,13 @@
+verkstad_motion:
+  module: i1_motion_lights
+  class: GenericMotion
+  sensor: binary_sensor.v0_verkstad_eye_security_motion_detection
+  state_id: v0_verkstaden_ljus
+  light:
+    - light.v0_verkstad_vagg
+    #- light.v0_verkstad_tak
+  from: "off"
+  to: "on"
+  sunup: True # also when sun is up
+  timeout: 1200
+
