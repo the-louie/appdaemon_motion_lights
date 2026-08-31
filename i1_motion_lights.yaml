@@ -9,5 +9,5 @@ verkstad_motion:
   from: "off"
   to: "on"
   sunup: True # also when sun is up
-  timeout: 1200
+  timeout: 180
 
