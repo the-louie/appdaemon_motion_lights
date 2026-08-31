@@ -1,3 +1,10 @@
-__pycache__
 config.yaml
 config.yaml.disabled
+__pycache__
+.*/
+
+# This app's live config is named i1_motion_lights.yaml, not config.yaml, so the
+# pattern above never matched it and the real configuration -- verkstad_motion,
+# with actual entity IDs -- was tracked and pushed to GitHub for three years.
+# i1_motion_lights.yaml.example is the template; this is the live file.
+i1_motion_lights.yaml
