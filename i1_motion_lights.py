@@ -24,6 +24,21 @@ class GenericMotion(hass.Hass):
       self.light = [self.light]
 
     self.timeout = self.args.get("timeout", DEFAULT_LAMP_TIMEOUT)
+
+    # Verify the configured entities EXIST before listening to them.
+    #
+    # verkstad_motion has been bound to
+    # binary_sensor.v0_verkstad_eye_security_motion_detection since its first
+    # commit. That entity does not exist -- not under that name, not under any
+    # other. The Verkstad area holds one bulb and a Z-Wave stick, and none of
+    # Home Assistant's 148 motion or occupancy entities is in the workshop.
+    #
+    # listen_state() on a non-existent entity registers happily and never
+    # fires, so the app has been loading cleanly and doing nothing at all for
+    # as long as it has existed. Nothing reported it. That is the failure this
+    # check removes: an app that cannot work should say so at startup.
+    self._report_missing_entities()
+
     self.listen_state(self.motion, self.sensor)
     
     #self.listen_state(self.stored_state_update, "irisone.state_{}".format(self.state_id))
@@ -32,6 +47,45 @@ class GenericMotion(hass.Hass):
                                                          self.state_from,
                                                          self.state_to,
                                                          self.light))
+
+  def _report_missing_entities(self):
+    """Distinguish 'never existed' from 'currently down'. Returns the missing.
+
+    A MISSING entity is a configuration error: the id is wrong or the hardware
+    was removed, and no amount of waiting will fix it. An UNAVAILABLE one is a
+    device that is off the network and may well come back, so it is worth a
+    warning and nothing more.
+
+    Collapsing the two would either cry wolf at every flat battery or stay
+    silent about a permanently dead binding. They are different problems.
+    """
+    missing = []
+    unavailable = []
+    for entity in [self.sensor] + list(self.light):
+      state = self.get_state(entity)
+      if state is None:
+        missing.append(entity)
+      elif str(state).lower() in ("unavailable", "unknown", ""):
+        unavailable.append(entity)
+
+    if missing:
+      self.log(
+        " >> GenericMotion.initialize(): ENTITY DOES NOT EXIST: {}. "
+        "listen_state() will register and never fire, so this app will load "
+        "cleanly and do nothing. Fix the entity id or remove the app.".format(
+          ", ".join(missing)
+        ),
+        level="ERROR",
+      )
+    if unavailable:
+      self.log(
+        " >> GenericMotion.initialize(): entity currently unavailable: {}. "
+        "It may return; the app will work when it does.".format(
+          ", ".join(unavailable)
+        ),
+        level="WARNING",
+      )
+    return missing
 
   def _setState(self, timer_handle, off_time):
     if self.state_id is None:
