@@ -2,6 +2,8 @@ import time
 import json
 import appdaemon.plugins.hass.hassapi as hass
 
+import light_deadline as deadline
+
 DEFAULT_LAMP_TIMEOUT = 300
 
 
@@ -37,6 +39,7 @@ class GenericMotion(hass.Hass):
     # fires, so the app has been loading cleanly and doing nothing at all for
     # as long as it has existed. Nothing reported it. That is the failure this
     # check removes: an app that cannot work should say so at startup.
+    self._handle = None
     self._report_missing_entities()
 
     self.listen_state(self.motion, self.sensor)
@@ -87,25 +90,34 @@ class GenericMotion(hass.Hass):
       )
     return missing
 
-  def _setState(self, timer_handle, off_time):
+  def _set_deadline(self, off_time):
+    """Publish the shared deadline. No timer handle is ever shared: see
+    light_deadline.py for why sharing one cannot work."""
     if self.state_id is None:
-        return
+      return
+    state = "on" if off_time else "off"
+    self.set_state(
+      "irisone.state_{}".format(self.state_id),
+      state=state,
+      attributes={"off_time": off_time},
+    )
 
-    if timer_handle is not None:
-      state = "on"
-    else:
-      state = "off"
-    self.set_state("irisone.state_{}".format(self.state_id), state=state, attributes={"timer": timer_handle, "off_time": off_time})
-
-  def _getState(self):
+  def _get_deadline(self):
     if self.state_id is None:
-      return { "timer_handle": None, "off_time": 0 }
+      return deadline.OFF
+    return deadline.parse(
+      self.get_state("irisone.state_{}".format(self.state_id), attribute="off_time")
+    )
 
-    timer_handle = self.get_state("irisone.state_{}".format(self.state_id), attribute="timer")
-    off_time = self.get_state("irisone.state_{}".format(self.state_id), attribute="off_time")
-    if off_time is None:
-      off_time = 0
-    return { "timer_handle": timer_handle, "off_time": off_time }
+  def _arm(self, seconds):
+    """Arm our OWN off-check. Cancelling our own previous handle is legal;
+    cancelling the other app's never was -- cancel_timer is app-scoped."""
+    if self._handle is not None:
+      try:
+        self.cancel_timer(self._handle)
+      except Exception:
+        pass  # a handle that has already fired is not an error
+    self._handle = self.run_in(self.check_deadline, max(1, int(seconds)))
 
   def motion(self, entity, attribute, old, new, kwargs):
     if (old != self.state_from and "*" != self.state_from) or new != self.state_to:
@@ -115,40 +127,42 @@ class GenericMotion(hass.Hass):
       return
 
     now = int(time.time())
-    off_time = now + self.timeout
-    
-    stored_state = self._getState()
-    if stored_state.get("off_time", 0) > off_time:
-      self.log("\tStored off_time is greater then new, exiting ({} > {})".format(stored_state.get("off_time", 0), off_time))
+    stored = self._get_deadline()
+    off_time = deadline.extend(stored, now, self.timeout)
+    self.log("\tMotion: deadline {} -> {} ({}s)".format(stored, off_time, off_time - now))
+
+    self._set_deadline(off_time)
+    for light in self.light:
+      self.log("\tTurning ON '{}'".format(light))
+      self.turn_on(light)
+    self._arm(off_time - now)
+
+  def check_deadline(self, kwargs):
+    """Turn off only if the shared deadline has actually passed.
+
+    This is the whole fix. A timer that fires while the other app has since
+    extended the deadline re-arms instead of killing the light, so the person
+    standing in the workshop keeps their light.
+    """
+    self._handle = None
+    now = int(time.time())
+    off_time = self._get_deadline()
+
+    if self.override_id is not None and self.get_state(self.override_id) == "off":
+      # Something says keep it on a little longer; extend rather than turn off.
+      off_time = deadline.extend(off_time, now, 60)
+      self.log("\tOverride {} is off; extending 60s".format(self.override_id))
+      self._set_deadline(off_time)
+      self._arm(deadline.remaining(off_time, now))
+      return
+
+    if not deadline.expired(off_time, now):
+      left = deadline.remaining(off_time, now)
+      self.log("\tDeadline extended elsewhere; re-arming for {}s".format(left))
+      self._arm(left)
       return
 
     for light in self.light:
-      if stored_state.get("timer_handle") is not None:
-        # if we already have a timer that ends before the new remove it
-        self.log("\tExsisting timer_handle is canceled new:{} old:{}".format(off_time, stored_state.get("off_time")))
-        self.cancel_timer(stored_state.get("timer_handle"))
-      else:
-        # otherwise keep it and do nothing
-        self.log("\tExsisting timer_handle does not exist new:{} old:{}".format(off_time, stored_state.get("off_time")))
-
-      self.log("\tTurning ON '{}'".format(light))
-      self.turn_on(light)
-      handle = self.run_in(self.light_off, self.timeout, light=light)
-      self._setState(handle, off_time)
-
-  def light_off(self, kwargs):
-    if self.override_id is not None:
-        screensaver = self.get_state(self.override_id)
-        self.log("\tscreensaver {} state: {}".format(self.override_id, screensaver))
-        if screensaver == "off":
-            now = int(time.time())
-            off_time = now + 60
-            self.log("\tOverride screen saver is off")
-            handle = self.run_in(self.light_off, self.timeout, light=kwargs["light"])
-            self._setState(handle, off_time)
-            return
-
-    light = kwargs["light"]
-    self.log("\tTurning OFF {}".format(light))
-    self.turn_off(light)
-    self._setState(None, 0)
+      self.log("\tTurning OFF {}".format(light))
+      self.turn_off(light)
+    self._set_deadline(deadline.OFF)
