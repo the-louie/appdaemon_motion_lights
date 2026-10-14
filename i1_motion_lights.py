@@ -120,6 +120,9 @@ class GenericMotion(hass.Hass):
     self._handle = self.run_in(self.check_deadline, max(1, int(seconds)))
 
   def motion(self, entity, attribute, old, new, kwargs):
+    if old == self.state_to and new != self.state_to:
+      self.motion_ended()
+      return
     if (old != self.state_from and "*" != self.state_from) or new != self.state_to:
       return
 
@@ -135,6 +138,21 @@ class GenericMotion(hass.Hass):
     for light in self.light:
       self.log("\tTurning ON '{}'".format(light))
       self.turn_on(light)
+    self._arm(off_time - now)
+
+  def motion_ended(self):
+    """Restart the timeout from the last moment motion was seen.
+
+    The deadline is set when motion starts, so a long motion period would
+    otherwise eat into the timeout that should follow it.
+    """
+    now = int(time.time())
+    stored = self._get_deadline()
+    if deadline.expired(stored, now):
+      return  # the light is not ours to keep on
+    off_time = deadline.extend(stored, now, self.timeout)
+    self.log("\tMotion ended: deadline {} -> {} ({}s)".format(stored, off_time, off_time - now))
+    self._set_deadline(off_time)
     self._arm(off_time - now)
 
   def check_deadline(self, kwargs):
@@ -160,6 +178,17 @@ class GenericMotion(hass.Hass):
       left = deadline.remaining(off_time, now)
       self.log("\tDeadline extended elsewhere; re-arming for {}s".format(left))
       self._arm(left)
+      return
+
+    if self.get_state(self.sensor) == self.state_to:
+      # Continuous movement holds the sensor on, so no new off->on edge
+      # arrives to extend the deadline. Turning off here left people moving
+      # in the dark until they stood still for the sensor's cancel delay
+      # (T-68: four times 10-04..10-12, sensor on for up to 365 s).
+      off_time = deadline.extend(off_time, now, self.timeout)
+      self.log("\tMotion still active; extending {}s".format(self.timeout))
+      self._set_deadline(off_time)
+      self._arm(deadline.remaining(off_time, now))
       return
 
     for light in self.light:
