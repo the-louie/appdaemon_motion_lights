@@ -75,3 +75,15 @@ def parse(value):
         return max(OFF, int(float(value)))
     except (TypeError, ValueError):
         return OFF
+
+
+def as_attributes(off_time):
+    """The shared entity's attributes for a deadline, lossless through AppDaemon (T-78).
+
+    AppDaemon 4.5.13's set_state silently drops a 0 (0 == False), and an empty
+    attribute dict never clears the old value, so "off" was only ever right by
+    luck. The deadline is written as a string, which survives, and parse() reads
+    it back exactly: "0" is OFF. Always pass replace=True with it, or AppDaemon
+    merges its own bookkeeping fields into the attributes.
+    """
+    return {"off_time": str(max(OFF, int(off_time or OFF)))}

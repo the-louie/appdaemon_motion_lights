@@ -99,7 +99,8 @@ class GenericMotion(hass.Hass):
     self.set_state(
       "irisone.state_{}".format(self.state_id),
       state=state,
-      attributes={"off_time": off_time},
+      attributes=deadline.as_attributes(off_time),
+      replace=True,
     )
 
   def _get_deadline(self):
